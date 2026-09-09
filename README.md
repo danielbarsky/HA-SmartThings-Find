@@ -1,5 +1,13 @@
-# ⚠️ Original Repository archived - forked repository with login alternative quick fix ⚠️
-Unfortunately, I no longer have the time to maintain this repository. I underestimated how much work it would be. Additionally, my focus recently has shifted away from HA (and programming in general) towards other things. I sincerely hope someone else can take over and build a solid, reliable integration from what's already here.
+# ⚠️ Fork: persistent authentication ⚠️
+
+This fork removes the recurring "paste a new JSESSIONID every few days" chore and
+fixes the reauth/reconfigure flows. See [Notes on authentication](#notes-on-authentication).
+
+> Upstream note from the original author, who archived the project: *"Unfortunately,
+> I no longer have the time to maintain this repository. I underestimated how much
+> work it would be. Additionally, my focus recently has shifted away from HA (and
+> programming in general) towards other things. I sincerely hope someone else can
+> take over and build a solid, reliable integration from what's already here."*
 
 # SmartThings Find Integration for Home Assistant
 
@@ -22,7 +30,50 @@ This integration does **not** allow you to perform actions based on button press
 - **Feature Constraints**: The integration can only support features available on the [SmartThings Find website](https://smartthingsfind.samsung.com/). For instance, stopping a SmartTag from ringing is not possible due to API limitations (while other devices do support this; not yet implemented)
 
 ## Notes on authentication
-The integration simulates Samsung login using QR code. It stores the retrieved JSESSIONID-Cookie and uses it for further requests. **It is not yet known, how long exactly the session is valid!** While it did work at least for several weeks for me and others, there's no definite answer and the session might become invalid anytime! As a precaution I implemented a reauth-flow: In case the session expires, Home Assistant will inform you and you can easily repeat the QR code login process.
+
+Earlier versions stored only the `JSESSIONID` cookie from the SmartThings Find
+website. That cookie is the bottom layer of Samsung's authentication chain and
+expires after a few days, and because nothing else was stored there was no way
+to recover - so you had to open a browser and paste a new cookie by hand.
+
+This fork signs in to your Samsung Account once and stores the master token that
+the sign-in produces. When the web session expires, the integration mints a new
+one from that token by itself:
+
+1. interactive Samsung Account sign-in &rarr; master `userauth_token`
+2. master token &rarr; short-lived web-Find authorization code
+3. `getState.do` &rarr; server-issued login state
+4. `login.do` &rarr; a fresh `JSESSIONID`
+
+The renewal happens in the background, so an expired cookie is no longer
+something you see. Home Assistant only asks you to sign in again if the master
+token itself stops working - after an account sign-out, a password change, or a
+server-side revocation.
+
+Two other authentication bugs are fixed here:
+
+- **Reauth and reconfigure used to fail.** Both called `async_create_entry`,
+  which Home Assistant 2025.11 turned into a hard error inside those flows, so
+  the only way to recover was to delete the integration and add it again. They
+  now update the existing entry.
+- **The session cookie was sent to every host.** It was registered without a
+  URL, which files it in aiohttp's domain-less "shared cookie" bucket, on the
+  Home Assistant-wide shared session. The integration now uses its own session
+  and scopes the cookie to `smartthingsfind.samsung.com`.
+
+### A note on the master token
+
+The master token is a primary credential: it can mint new sessions for your
+Samsung Account. It is stored in Home Assistant's config entry storage
+(`.storage/core.config_entries`, the same place every other integration keeps
+its credentials) and is never written to the log. Treat a backup of that file as
+you would your Samsung password.
+
+Protocol details follow the reverse engineering published by
+[KieronQuinn/uTag](https://github.com/KieronQuinn/uTag/wiki/Authentication) and
+[charlesbel/samsung-re-find](https://github.com/charlesbel/samsung-re-find) (MIT),
+and the OAuth login rework in
+[PixelShober/HA-SmartThings-Find](https://github.com/PixelShober/HA-SmartThings-Find).
 
 ## Notes on connection to the devices
 Being able to let a SmartTag ring depends on a phone/tablet nearby which forwards your request via Bluetooth. If your phone is not near your tag, you can't make it ring. The location should still update if any Galaxy device is nearby. 
@@ -58,14 +109,27 @@ By default active mode is enabled for SmartTags but disabled for any other devic
 
 [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=smartthings_find)
 
-1. Go to the Integrations page  
-2. Search for "SmartThings *Find*" (**do not confuse this with the built-in SmartThings integration!**)  
-3. Visit https://smartthingsfind.samsung.com/ and log in with your Samsung account.  
-4. Open Developer Tools in your browser.  
-5. Follow the instructions below and copy the JSESSIONID value:  
-![screenshot](media/alternative_login_flow.png)  
-6. Enter your JSESSIONID into Home Assistant.  
+1. Go to the Integrations page
+2. Search for "SmartThings *Find*" (**do not confuse this with the built-in SmartThings integration!**)
+3. Open the sign-in link the dialog gives you and log in to your Samsung Account.
+4. Your browser will then try to open an `ms-app://...` address. It will show an
+   error page, or ask to open an external app - that is expected, because the
+   address belongs to Samsung's own app. Cancel any app prompt and leave the tab
+   open.
+5. Open your browser's developer tools (F12), go to **Network** or **Console**,
+   and copy the full address starting with `ms-app://`. Copy that address itself,
+   not the address of the visible error page.
+6. Paste it back into the Home Assistant dialog.
 7. Wait a few seconds for the integration to be ready.
+
+You only do this once. From then on the integration renews its own sessions.
+
+### Upgrading from an older version
+
+Existing entries keep working on their current cookie and log a warning that
+they cannot renew it yet. To enable automatic renewal, press **Reconfigure** on
+the integration and complete the sign-in above. Your devices, entity IDs and
+history are preserved.
 
 ## Debugging
 
