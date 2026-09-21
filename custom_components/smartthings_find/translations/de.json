@@ -1,16 +1,35 @@
 {
   "config": {
     "abort": {
-      "reauth_successful": "Erfolgreich authentifiziert."
+      "reauth_successful": "Erfolgreich authentifiziert. Sitzungen werden ab jetzt automatisch erneuert.",
+      "reconfigure_successful": "Neu konfiguriert. Sitzungen werden ab jetzt automatisch erneuert."
     },
-    "progress": {
-      "task_stage_one": "Vorbereitung läuft, bitte warten...",
-      "task_stage_two": "Bitte scanne den QR Code mit deinem Galaxy-Gerät, um dich anzumelden. Alternativ kannst du dich direkt im Browser anmelden, indum du [hier]({url}) klickst. \n\n![QR Code](data:image/png;base64,{qr_code})\n\nCode kann nicht gescannt werden? Gehe auf [signin.samsung.com/key](https://signin.samsung.com/key/) und gib den folgenden Code ein:\n\n## ```{code}```\n"
+    "step": {
+      "user": {
+        "title": "SmartThings Find",
+        "description": "Die Anmeldung beim Samsung Account wird vorbereitet..."
+      },
+      "reauth_confirm": {
+        "title": "Erneut beim Samsung Account anmelden",
+        "description": "Die SmartThings Find-Sitzung konnte nicht automatisch erneuert werden. Meist wurde die Anmeldung widerrufen, das Passwort geändert oder das Konto abgemeldet.\n\nWähle **Bestätigen**, um dich erneut anzumelden."
+      },
+      "auth_code": {
+        "title": "Beim Samsung Account anmelden",
+        "description": "1. Öffne [diesen Anmelde-Link]({login_url}) und melde dich bei deinem Samsung Account an.\n2. Der Browser versucht anschließend, eine `ms-app://...`-Adresse zu öffnen, und zeigt einen Fehler oder fragt nach einer externen App. Das ist normal — brich die Abfrage ab und lass den Tab offen.\n3. Öffne die Entwicklertools (F12), gehe auf **Netzwerk** oder **Konsole** und kopiere die vollständige Adresse, die mit `ms-app://` beginnt.\n4. Füge sie unten ein.\n\nKopiere die `ms-app://`-Adresse selbst, nicht die Adresse der angezeigten Fehlerseite.",
+        "data": {
+          "redirect_url": "Die ms-app://-Adresse"
+        }
+      }
+    },
+    "error": {
+      "login_error": "Die Anmeldung beim Samsung Account konnte nicht gestartet werden: {error_msg}",
+      "auth_failed": "Anmeldung fehlgeschlagen: {error_msg}"
     }
   },
   "options": {
     "step": {
       "init": {
+        "description": "Abfrageintervall und aktiven Modus konfigurieren.",
         "data": {
           "update_interval": "Aktualisierungsintervall (in Sekunden)",
           "active_mode_smarttags": "Aktiven Modus für SmartTags verwenden. Könnte Batterienutzung erhöhen",

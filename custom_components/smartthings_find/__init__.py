@@ -5,13 +5,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.const import Platform
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.config_entries import ConfigEntry
 
 from .const import (
     DOMAIN,
-    CONF_JSESSIONID,
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ACTIVE_MODE_OTHERS_DEFAULT,
     CONF_ACTIVE_MODE_SMARTTAGS,
@@ -19,11 +18,21 @@ from .const import (
     CONF_UPDATE_INTERVAL,
     CONF_UPDATE_INTERVAL_DEFAULT
 )
-from .utils import fetch_csrf, get_devices, get_device_location
+from .auth import WebSessionManager
+from .utils import get_devices, get_device_location
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.DEVICE_TRACKER, Platform.BUTTON, Platform.SENSOR]
+
+# Samsung rejects requests without a browser-ish User-Agent on some paths.
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    )
+}
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the SmartThings Find component."""
@@ -32,14 +41,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up SmartThings Find from a config entry."""
-    
+
+    hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {}
 
-    # Load the jsessionid from the config and create a session from it
-    jsessionid = entry.data[CONF_JSESSIONID]
+    # A session of our own, so the Samsung cookie can never ride along on
+    # requests made by other integrations. Detached automatically on unload.
+    session = async_create_clientsession(hass, headers=BROWSER_HEADERS)
 
-    session = async_get_clientsession(hass)
-    session.cookie_jar.update_cookies({"JSESSIONID": jsessionid})
+    auth = WebSessionManager(hass, entry, session)
 
     active_smarttags = entry.options.get(CONF_ACTIVE_MODE_SMARTTAGS, CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT)
     active_others = entry.options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT)
@@ -47,15 +57,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id].update({
         CONF_ACTIVE_MODE_SMARTTAGS:  active_smarttags,
         CONF_ACTIVE_MODE_OTHERS: active_others,
+        "auth": auth,
+        "session": session,
     })
 
-    # This raises ConfigEntryAuthFailed-exception if failed. So if we
-    # can continue after fetch_csrf, we know that authentication was ok
-    await fetch_csrf(hass, session, entry.entry_id)
-    
+    # Raises ConfigEntryAuthFailed only if the session is dead AND cannot be
+    # renewed from stored credentials, so a merely expired cookie is invisible.
+    await auth.async_ensure_session()
+
+    if not auth.can_self_renew:
+        _LOGGER.warning(
+            "This SmartThings Find entry predates automatic session renewal and "
+            "will still expire. Reconfigure it once to sign in and enable renewal"
+        )
+
     # Load all SmartThings-Find devices from the users account
     devices = await get_devices(hass, session, entry.entry_id)
-    
+
     # Create an update coordinator. This is responsible to regularly
     # fetch data from STF and update the device_tracker and sensor
     # entities
@@ -66,17 +84,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # seconds for my 15 devices) but it is the right way to do it. Only if
     # it succeeds, the integration will be marked as successfully loaded.
     await coordinator.async_config_entry_first_refresh()
-    
+
     hass.data[DOMAIN][entry.entry_id].update({
-        CONF_JSESSIONID: jsessionid,
-        "session": session,
         "coordinator": coordinator,
         "devices": devices
     })
 
-    hass.async_create_task(
-        hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    )
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -114,6 +128,10 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator):
                 tag_data = await get_device_location(self.hass, self.session, dev_data, self.config_entry.entry_id)
                 tags[dev_data['dvceID']] = tag_data
             _LOGGER.debug(f"Fetched {len(tags)} locations")
+
+            # Samsung may have handed us a new cookie along the way; keep the
+            # stored one in step so a restart does not fall back to a dead value.
+            self.hass.data[DOMAIN][self.config_entry.entry_id]["auth"].note_rotated_cookie()
             return tags
         except ConfigEntryAuthFailed as err:
             raise

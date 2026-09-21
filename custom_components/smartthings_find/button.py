@@ -5,8 +5,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
-from .utils import fetch_csrf
+from .const import DOMAIN, URL_REQUEST_LOC_UPDATE
+from .utils import stf_post
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,7 +39,6 @@ class RingButton(ButtonEntity):
         """Handle the button press."""
         entry_id = self.registry_entry.config_entry_id
         session = self.hass.data[DOMAIN][entry_id]["session"]
-        csrf_token = self.hass.data[DOMAIN][entry_id]["_csrf"]
         ring_payload = {
             "dvceId": self.device['dvceID'],
             "operation": "RING",
@@ -47,17 +46,19 @@ class RingButton(ButtonEntity):
             "status": "start",
             "lockMessage": "Home Assistant is ringing your device!"
         }
-        url = f"https://smartthingsfind.samsung.com/dm/addOperation.do?_csrf={
-            csrf_token}"
 
         try:
-            async with session.post(url, json=ring_payload) as response:
-                _LOGGER.debug("HTTP response status: %s", response.status)
-                if response.status == 200:
-                    _LOGGER.info(f"Successfully rang device {self.device['modelName']}")
-                    _LOGGER.debug(f"Response: {await response.text()}")
-                else:
-                    # Fetch a new CSRF token to make sure we're still logged in
-                    await fetch_csrf(self.hass, session, entry_id)
+            # stf_post renews the session itself if Samsung rejects it.
+            status, text = await stf_post(
+                self.hass, session, entry_id, URL_REQUEST_LOC_UPDATE,
+                json_body=ring_payload,
+            )
+            _LOGGER.debug("HTTP response status: %s", status)
+            if status == 200:
+                _LOGGER.info(f"Successfully rang device {self.device['modelName']}")
+                _LOGGER.debug(f"Response: {text}")
+            else:
+                _LOGGER.error(
+                    f"Failed to ring '{self.device['modelName']}' ({status})")
         except Exception as e:
             _LOGGER.error(f"Exception occurred while ringing '{self.device['modelName']}': %s", e)
