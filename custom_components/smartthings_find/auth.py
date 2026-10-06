@@ -214,7 +214,10 @@ async def async_start_login(
             raise SmartThingsFindAuthError(
                 f"Could not reach the Samsung Account entry point (HTTP {res.status})"
             )
-        entry = await res.json()
+        # content_type=None throughout this module: Samsung labels some JSON
+        # responses text/plain (getState.do does), and aiohttp would otherwise
+        # refuse to parse a perfectly good body.
+        entry = await res.json(content_type=None)
 
     try:
         sign_in_uri = entry["signInURI"]
@@ -322,7 +325,7 @@ async def async_finish_login(
             raise SmartThingsFindAuthError(
                 f"Samsung rejected the authorization code (HTTP {res.status})"
             )
-        data = await res.json()
+        data = await res.json(content_type=None)
 
     userauth_token = data.get("userauth_token") or data.get("userAuthToken")
     user_id = data.get("userId") or data.get("user_id")
@@ -406,7 +409,7 @@ async def async_mint_jsessionid(
                 raise SmartThingsFindAuthError(
                     f"Web session authorization failed (HTTP {res.status})"
                 )
-            return await res.json()
+            return await res.json(content_type=None)
 
     auth_data = await _authorize(params)
     code = auth_data.get("code")
@@ -421,41 +424,44 @@ async def async_mint_jsessionid(
         )
 
     # login.do only accepts the opaque state issued by getState.do, and needs
-    # the bootstrap cookie from that same call, so both share one cookie jar.
-    async with aiohttp.ClientSession() as bootstrap:
-        async with bootstrap.get(URL_GET_STATE, params={"payload": "hound"}) as res:
-            if res.status != 200:
-                raise SmartThingsFindAuthError(
-                    f"Could not bootstrap the web session (HTTP {res.status})"
-                )
-            login_state = (await res.json()).get("state")
-        if not login_state:
-            raise SmartThingsFindAuthError("SmartThings Find omitted the login state")
+    # the bootstrap cookie from that same call, so both run on one jar. Drop any
+    # dead cookie first so the bootstrap starts clean - it is about to be
+    # replaced regardless. Reusing the caller's session rather than building a
+    # throwaway one keeps Home Assistant's connector and avoids the blocking
+    # SSL-context setup that creating a ClientSession performs.
+    session.cookie_jar.clear_domain("smartthingsfind.samsung.com")
 
-        async with bootstrap.get(
-            URL_LOGIN,
-            params={
-                "auth_server_url": creds.auth_host,
-                "api_server_url": creds.auth_host,
-                "code": code,
-                "code_expires_in": str(auth_data.get("code_expires_in", 300)),
-                "state": login_state,
-            },
-            allow_redirects=False,
-        ) as res:
-            if res.status not in (200, 302):
-                raise SmartThingsFindAuthError(
-                    f"Web session exchange failed (HTTP {res.status})"
-                )
-
-        cookie = bootstrap.cookie_jar.filter_cookies(URL(URL_STF_BASE)).get(
-            "JSESSIONID"
-        )
-        if not cookie or not cookie.value:
+    async with session.get(URL_GET_STATE, params={"payload": "hound"}) as res:
+        if res.status != 200:
             raise SmartThingsFindAuthError(
-                "SmartThings Find did not issue a session cookie"
+                f"Could not bootstrap the web session (HTTP {res.status})"
             )
-        jsessionid = cookie.value
+        login_state = (await res.json(content_type=None)).get("state")
+    if not login_state:
+        raise SmartThingsFindAuthError("SmartThings Find omitted the login state")
+
+    async with session.get(
+        URL_LOGIN,
+        params={
+            "auth_server_url": creds.auth_host,
+            "api_server_url": creds.auth_host,
+            "code": code,
+            "code_expires_in": str(auth_data.get("code_expires_in", 300)),
+            "state": login_state,
+        },
+        allow_redirects=False,
+    ) as res:
+        if res.status not in (200, 302):
+            raise SmartThingsFindAuthError(
+                f"Web session exchange failed (HTTP {res.status})"
+            )
+
+    cookie = session.cookie_jar.filter_cookies(URL(URL_STF_BASE)).get("JSESSIONID")
+    if not cookie or not cookie.value:
+        raise SmartThingsFindAuthError(
+            "SmartThings Find did not issue a session cookie"
+        )
+    jsessionid = cookie.value
 
     csrf = await async_validate_jsessionid(session, jsessionid)
     if not csrf:
